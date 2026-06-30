@@ -737,6 +737,32 @@ function getNameByCode(code){
 }
 
 // ══ FETCH QUOTE（昨收用歷史K棒修正）══
+// quoteSummary 端點：補上 chart API 常缺漏的 EPS / 市值 / Beta / 本益比 / 股淨比
+async function fetchQuoteSummary(ticker){
+  try{
+    const modules='summaryDetail,defaultKeyStatistics,financialData,price';
+    const url=`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}`;
+    const r=await px(url,6000);
+    const d=await r.json();
+    const res=d?.quoteSummary?.result?.[0];
+    if(!res) return null;
+    const sd=res.summaryDetail||{}, ks=res.defaultKeyStatistics||{}, pr=res.price||{};
+    const num=(o)=>o&&typeof o.raw==='number'?o.raw:null;
+    return{
+      trailingPE: num(sd.trailingPE),
+      forwardPE: num(sd.forwardPE),
+      pb: num(ks.priceToBook),
+      divYield: num(sd.dividendYield),
+      eps: num(ks.trailingEps),
+      forwardEps: num(ks.forwardEps),
+      beta: num(ks.beta) ?? num(sd.beta),
+      mktCap: num(pr.marketCap) ?? num(sd.marketCap),
+      w52h: num(sd.fiftyTwoWeekHigh),
+      w52l: num(sd.fiftyTwoWeekLow),
+    };
+  }catch(e){ return null; }
+}
+
 async function fetchQ(sym){
   const t=toTicker(sym);
   try{
@@ -771,7 +797,24 @@ async function fetchQ(sym){
     }
     prevClose = prevClose || m.chartPreviousClose || m.previousClose;
     let pe=m.trailingPE, pb=m.priceToBook, divY=m.dividendYield;
+    let eps=m.epsTrailingTwelveMonths, beta=m.beta, mktCap=m.marketCap;
+    let w52h=m.fiftyTwoWeekHigh, w52l=m.fiftyTwoWeekLow;
     const code=t.replace(/\.(TW|TWO)$/i,'');
+    // chart API的meta常常缺EPS/市值/Beta，補抓quoteSummary
+    if(!eps || !mktCap || !beta){
+      const qs=await fetchQuoteSummary(t);
+      if(qs){
+        pe = pe || qs.trailingPE;
+        pb = pb || qs.pb;
+        divY = divY || qs.divYield;
+        eps = eps || qs.eps;
+        beta = beta || qs.beta;
+        mktCap = mktCap || qs.mktCap;
+        w52h = w52h || qs.w52h;
+        w52l = w52l || qs.w52l;
+      }
+    }
+    // 台股再用TWSE補PE/PB/殖利率（若還是缺）
     if(/^\d{4,6}$/.test(code)&&(!pe||!pb)){
       const tv=await getTWSEVal(); const td=tv[code];
       if(td){pe=pe||td.pe; pb=pb||td.pb; divY=divY||(td.div?td.div/100:null);}
@@ -779,9 +822,9 @@ async function fetchQ(sym){
     return{symbol:t,name:m.shortName||m.longName||t,
       price:m.regularMarketPrice, prev:prevClose,
       open:m.regularMarketOpen, high:m.regularMarketDayHigh, low:m.regularMarketDayLow,
-      vol:m.regularMarketVolume, mktCap:m.marketCap,
-      w52h:m.fiftyTwoWeekHigh, w52l:m.fiftyTwoWeekLow,
-      pe, pb, divYield:divY, eps:m.epsTrailingTwelveMonths, beta:m.beta,
+      vol:m.regularMarketVolume, mktCap,
+      w52h, w52l,
+      pe, pb, divYield:divY, eps, beta,
       currency:m.currency||'', exchange:m.exchangeName||''};
   }catch(e){return null}
 }
